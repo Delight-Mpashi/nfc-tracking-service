@@ -24,11 +24,13 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin(origin, callback) {
-        if (!origin || allowedOrigins.includes(origin)) {
+        const isAllowedRenderOrigin = /^https:\/\/[a-z0-9-]+\.onrender\.com$/i.test(origin || "");
+
+        if (!origin || allowedOrigins.includes(origin) || isAllowedRenderOrigin) {
             return callback(null, true);
         }
 
-        return callback(new Error(`CORS blocked for origin: ${origin}`));
+        return callback(null, false);
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -87,6 +89,14 @@ async function initializeDatabase() {
  */
 app.get("/", (req, res) => {
     res.status(200).send("NFC Tracking Service Running 🚀");
+});
+
+app.get("/api/health", (req, res) => {
+    res.status(200).json({
+        ok: true,
+        service: "nfc-tracking-api",
+        routes: ["/api/cards", "/api/cards/:slug", "/cards", "/stats/:slug", "/t/:slug"]
+    });
 });
 
 /**
@@ -324,6 +334,13 @@ app.get("/api/cards/:slug", async (req, res) => {
             error: "Failed to fetch analytics"
         });
     }
+});
+
+app.use((req, res) => {
+    res.status(404).json({
+        error: "Route not found",
+        path: req.originalUrl
+    });
 });
 
 /**
