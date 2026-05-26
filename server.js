@@ -10,7 +10,7 @@ app.use(express.json());
  * HEALTH CHECK
  */
 app.get("/", (req, res) => {
-    res.send("NFC Tracking Service Running 🚀");
+    res.send("NFC Tracking Service Running ");
 });
 
 /**
