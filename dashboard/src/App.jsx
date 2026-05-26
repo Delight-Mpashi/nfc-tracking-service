@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 
-const API = "https://nfc-tracking-api.onrender.com";
+const API = import.meta.env.VITE_API_URL || "https://nfc-tracking-api.onrender.com";
 
 export default function App() {
     const [cards, setCards] = useState([]);
