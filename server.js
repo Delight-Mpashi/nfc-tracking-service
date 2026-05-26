@@ -1,18 +1,71 @@
 require("dotenv").config();
+
 const express = require("express");
 const axios = require("axios");
-const db = require("./db");
 const cors = require("cors");
 
+const db = require("./db");
+
 const app = express();
-app.use(cors());
+
+/**
+ * CORS CONFIG
+ */
+app.use(cors({
+    origin: "*",
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type"]
+}));
+
 app.use(express.json());
+
+/**
+ * REQUEST LOGGER
+ */
+app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+});
+
+/**
+ * INITIALIZE DATABASE TABLES
+ */
+async function initializeDatabase() {
+    try {
+
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS cards (
+                id SERIAL PRIMARY KEY,
+                slug TEXT UNIQUE NOT NULL,
+                destination_url TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        `);
+
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS taps (
+                id SERIAL PRIMARY KEY,
+                card_slug TEXT NOT NULL,
+                ip_address TEXT,
+                user_agent TEXT,
+                city TEXT,
+                country TEXT,
+                tapped_at TIMESTAMP DEFAULT NOW()
+            );
+        `);
+
+        console.log("Database initialized");
+
+    } catch (err) {
+        console.error("Database initialization failed:", err);
+    }
+}
 
 /**
  * HEALTH CHECK
  */
 app.get("/", (req, res) => {
-    res.send("NFC Tracking Service Running ");
+    res.status(200).send("NFC Tracking Service Running 🚀");
 });
 
 /**
@@ -20,46 +73,62 @@ app.get("/", (req, res) => {
  * NFC hits this URL
  */
 app.get("/t/:slug", async (req, res) => {
-    const slug = req.params.slug;
 
     try {
-        // 1. Get card from DB
+
+        const slug = req.params.slug;
+
+        // 1. Find card
         const cardResult = await db.query(
             "SELECT * FROM cards WHERE slug = $1",
             [slug]
         );
 
         if (cardResult.rows.length === 0) {
-            return res.status(404).send("Card not found");
+            return res.status(404).json({
+                error: "Card not found"
+            });
         }
 
         const card = cardResult.rows[0];
 
-        // 2. Get user IP
-        const ip =
-            req.headers["x-forwarded-for"] ||
-            req.socket.remoteAddress ||
-            null;
+        // 2. Get IP
+        const forwarded = req.headers["x-forwarded-for"];
 
-        // 3. Get geolocation (optional but useful)
+        const ip = forwarded
+            ? forwarded.split(",")[0]
+            : req.socket.remoteAddress;
+
+        // 3. Geo lookup
         let city = null;
         let country = null;
 
         try {
-            const geo = await axios.get(`https://ipapi.co/${ip}/json/`);
 
-            city = geo.data.city;
-            country = geo.data.country_name;
+            const geo = await axios.get(
+                `https://ipapi.co/${ip}/json/`
+            );
 
-        } catch (err) {
+            city = geo.data.city || null;
+            country = geo.data.country_name || null;
+
+        } catch (geoError) {
             console.log("Geo lookup failed");
         }
 
-        // 4. Log tap event
+        // 4. Save tap
         await db.query(
-            `INSERT INTO taps 
-            (card_slug, ip_address, user_agent, city, country)
-            VALUES ($1, $2, $3, $4, $5)`,
+            `
+            INSERT INTO taps
+            (
+                card_slug,
+                ip_address,
+                user_agent,
+                city,
+                country
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            `,
             [
                 slug,
                 ip,
@@ -69,109 +138,182 @@ app.get("/t/:slug", async (req, res) => {
             ]
         );
 
-        // 5. Redirect to actual card
+        // 5. Redirect
         return res.redirect(card.destination_url);
 
     } catch (error) {
+
         console.error("Tracking error:", error);
-        return res.status(500).send("Server error");
+
+        return res.status(500).json({
+            error: "Internal server error"
+        });
     }
 });
 
 /**
- * OPTIONAL: create card endpoint (for testing)
+ * CREATE CARD
  */
 app.post("/cards", async (req, res) => {
-    const { slug, destination_url } = req.body;
 
     try {
+
+        const { slug, destination_url } = req.body;
+
+        if (!slug || !destination_url) {
+            return res.status(400).json({
+                error: "slug and destination_url are required"
+            });
+        }
+
         await db.query(
-            `INSERT INTO cards (slug, destination_url)
-             VALUES ($1, $2)`,
+            `
+            INSERT INTO cards
+            (slug, destination_url)
+            VALUES ($1, $2)
+            `,
             [slug, destination_url]
         );
 
-        res.json({ message: "Card created" });
+        return res.status(201).json({
+            message: "Card created successfully"
+        });
 
     } catch (err) {
-        res.status(500).json({ error: err.message });
+
+        console.error(err);
+
+        return res.status(500).json({
+            error: err.message
+        });
     }
 });
 
 /**
- * OPTIONAL: basic stats endpoint
+ * BASIC STATS
  */
 app.get("/stats/:slug", async (req, res) => {
-    const slug = req.params.slug;
 
-    const result = await db.query(
-        `SELECT 
-            COUNT(*) as total_taps,
-            COUNT(DISTINCT ip_address) as unique_visitors
-         FROM taps
-         WHERE card_slug = $1`,
-        [slug]
-    );
+    try {
 
-    res.json(result.rows[0]);
+        const slug = req.params.slug;
+
+        const result = await db.query(
+            `
+            SELECT 
+                COUNT(*) AS total_taps,
+                COUNT(DISTINCT ip_address) AS unique_visitors
+            FROM taps
+            WHERE card_slug = $1
+            `,
+            [slug]
+        );
+
+        return res.json(result.rows[0]);
+
+    } catch (err) {
+
+        console.error(err);
+
+        return res.status(500).json({
+            error: "Failed to fetch stats"
+        });
+    }
 });
 
-// Additions
+/**
+ * GET ALL CARDS
+ */
 app.get("/api/cards", async (req, res) => {
-    const result = await db.query(`
-        SELECT 
-            c.slug,
-            c.destination_url,
-            COUNT(t.id) AS total_taps,
-            COUNT(DISTINCT t.ip_address) AS unique_visitors
-        FROM cards c
-        LEFT JOIN taps t ON c.slug = t.card_slug
-        GROUP BY c.slug, c.destination_url
-        ORDER BY total_taps DESC;
-    `);
 
-    res.json(result.rows);
+    try {
+
+        const result = await db.query(`
+            SELECT 
+                c.slug,
+                c.destination_url,
+                COUNT(t.id)::INTEGER AS total_taps,
+                COUNT(DISTINCT t.ip_address)::INTEGER AS unique_visitors
+            FROM cards c
+            LEFT JOIN taps t
+                ON c.slug = t.card_slug
+            GROUP BY c.slug, c.destination_url
+            ORDER BY total_taps DESC;
+        `);
+
+        return res.json(result.rows);
+
+    } catch (err) {
+
+        console.error(err);
+
+        return res.status(500).json({
+            error: "Failed to fetch cards"
+        });
+    }
 });
 
+/**
+ * SINGLE CARD ANALYTICS
+ */
 app.get("/api/cards/:slug", async (req, res) => {
-    const slug = req.params.slug;
 
-    const stats = await db.query(`
-        SELECT 
-            COUNT(*) AS total_taps,
-            COUNT(DISTINCT ip_address) AS unique_visitors
-        FROM taps
-        WHERE card_slug = $1;
-    `, [slug]);
+    try {
 
-    const recent = await db.query(`
-        SELECT *
-        FROM taps
-        WHERE card_slug = $1
-        ORDER BY tapped_at DESC
-        LIMIT 20;
-    `, [slug]);
+        const slug = req.params.slug;
 
-    const locations = await db.query(`
-        SELECT city, country, COUNT(*) as count
-        FROM taps
-        WHERE card_slug = $1
-        GROUP BY city, country
-        ORDER BY count DESC;
-    `, [slug]);
+        const stats = await db.query(`
+            SELECT 
+                COUNT(*)::INTEGER AS total_taps,
+                COUNT(DISTINCT ip_address)::INTEGER AS unique_visitors
+            FROM taps
+            WHERE card_slug = $1;
+        `, [slug]);
 
-    res.json({
-        stats: stats.rows[0],
-        recent: recent.rows,
-        locations: locations.rows
-    });
+        const recent = await db.query(`
+            SELECT *
+            FROM taps
+            WHERE card_slug = $1
+            ORDER BY tapped_at DESC
+            LIMIT 20;
+        `, [slug]);
+
+        const locations = await db.query(`
+            SELECT 
+                city,
+                country,
+                COUNT(*)::INTEGER AS count
+            FROM taps
+            WHERE card_slug = $1
+            GROUP BY city, country
+            ORDER BY count DESC;
+        `, [slug]);
+
+        return res.json({
+            stats: stats.rows[0],
+            recent: recent.rows,
+            locations: locations.rows
+        });
+
+    } catch (err) {
+
+        console.error(err);
+
+        return res.status(500).json({
+            error: "Failed to fetch analytics"
+        });
+    }
 });
 
-
-
-
+/**
+ * START SERVER
+ */
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+initializeDatabase().then(() => {
+
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
+
 });
