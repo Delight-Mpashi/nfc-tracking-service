@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 
-const API = "https://your-tracking-service.onrender.com";
+const API = "https://nfc-tracking-api.onrender.com";
 
 export default function App() {
     const [cards, setCards] = useState([]);
