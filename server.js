@@ -114,6 +114,60 @@ app.get("/stats/:slug", async (req, res) => {
     res.json(result.rows[0]);
 });
 
+// Additions
+app.get("/api/cards", async (req, res) => {
+    const result = await db.query(`
+        SELECT 
+            c.slug,
+            c.destination_url,
+            COUNT(t.id) AS total_taps,
+            COUNT(DISTINCT t.ip_address) AS unique_visitors
+        FROM cards c
+        LEFT JOIN taps t ON c.slug = t.card_slug
+        GROUP BY c.slug, c.destination_url
+        ORDER BY total_taps DESC;
+    `);
+
+    res.json(result.rows);
+});
+
+app.get("/api/cards/:slug", async (req, res) => {
+    const slug = req.params.slug;
+
+    const stats = await db.query(`
+        SELECT 
+            COUNT(*) AS total_taps,
+            COUNT(DISTINCT ip_address) AS unique_visitors
+        FROM taps
+        WHERE card_slug = $1;
+    `, [slug]);
+
+    const recent = await db.query(`
+        SELECT *
+        FROM taps
+        WHERE card_slug = $1
+        ORDER BY tapped_at DESC
+        LIMIT 20;
+    `, [slug]);
+
+    const locations = await db.query(`
+        SELECT city, country, COUNT(*) as count
+        FROM taps
+        WHERE card_slug = $1
+        GROUP BY city, country
+        ORDER BY count DESC;
+    `, [slug]);
+
+    res.json({
+        stats: stats.rows[0],
+        recent: recent.rows,
+        locations: locations.rows
+    });
+});
+
+
+
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
